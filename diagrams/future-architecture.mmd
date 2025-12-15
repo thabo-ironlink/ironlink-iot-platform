@@ -1,0 +1,40 @@
+flowchart TB
+  %% Future-state architecture (Pilot/Production-like)
+
+  subgraph Site["Edge Site (Customer Location)"]
+    MACH[Machines / PLCs / Sensors\n(ESP32, PLC, VFD, etc.)]
+    GW[Edge Gateway\n(protocol translation + buffering)]
+    MQE[Local MQTT Broker (optional)\n(Mosquitto/EMQX edge)]
+    BUF[Local Buffer / Disk Queue\n(store-and-forward)]
+    AGENT[Edge Agent\n(Telegraf/Vector/Custom)]
+  end
+
+  subgraph Cloud["Central Platform (Cloud/VPC/Data Centre)"]
+    INGRESS[Ingress\n(TLS termination, rate limiting)]
+    MQC[Secure MQTT Cluster / Ingestion Gateway\n(TLS + Auth)]
+    PIPE[Ingestion Pipeline\n(validate, enrich, route)]
+    TSDB[Time-series DB\n(InfluxDB/Timescale)]
+    GRAF[Grafana\n(Multi-tenant dashboards)]
+    ALERTS[Alerting Engine\n(rules + notifications)]
+    AUTH[AuthN/AuthZ\n(RBAC, tenants)]
+    AUDIT[Audit Logs]
+    OBJ[Object Storage\n(raw payloads, backups)]
+  end
+
+  MACH -->|Modbus/OPC-UA/MQTT| GW
+  GW --> MQE
+  GW --> BUF
+  MQE -->|Subscribe| AGENT
+  BUF -->|Replay when online| AGENT
+
+  AGENT -->|MQTT over TLS / HTTPS| INGRESS --> MQC --> PIPE
+  PIPE --> TSDB --> GRAF
+  TSDB --> ALERTS
+  AUTH --> GRAF
+  PIPE --> OBJ
+  AUTH --> AUDIT
+
+  note2["Future-state goals:\n- Multi-site + multi-tenant\n- Secure transport (TLS + device identity)\n- Buffering for intermittent connectivity\n- Alerts + auditability"]:::note
+  GRAF --- note2
+
+  classDef note fill:#f5f5f5,stroke:#999,color:#111;

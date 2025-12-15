@@ -1,0 +1,16 @@
+# Runtime data / volumes (never commit)
+**/grafana-data/
+**/influxdb-data/
+**/mosquitto-data/
+**/mosquitto-log/
+**/*.db
+**/*.log
+
+# Imports and backups
+/_imports/
+*.tar.gz
+
+# Secrets (never commit)
+.env
+**/*.key
+**/*.pem

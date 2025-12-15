@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.env
+*.env
+
+# Logs
+*.log
+
+# InfluxDB
+influxdb/data/
+influxdb/wal/
+
+# Grafana
+grafana/data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Secrets
+secrets/
+certs/

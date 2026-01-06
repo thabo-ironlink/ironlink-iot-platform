@@ -9,6 +9,19 @@
 
 The **Ironlink IoT Platform** is an edge-centric monitoring platform designed to ingest telemetry from industrial equipment and sensors, store it reliably, and expose actionable visibility through dashboards and alerts.
 
+Release Reality (Read This First)
+
+Ironlink follows an incremental hardening model:
+
+- v0.1.x — Proof of Concept (PoC)
+- v0.2.x — Edge production readiness (monitoring)
+- v0.3.x — Cloud ingestion & secure transport
+- v1.0.0 — General availability
+
+Each release explicitly documents what is guaranteed and what is out of scope.
+See `docs/08-v0.2.0-readiness.md` for operational guarantees.
+
+
 The platform is intentionally designed to:
 
 * Work **with or without PLCs / SCADA**
@@ -28,7 +41,7 @@ This repository contains:
 
 ## Current Status
 
-**Milestone:** `v0.1.0-edge-poc`
+**Milestone:** `v0.2.0-edge-prod`
 
 Implemented and validated:
 
@@ -39,7 +52,13 @@ Implemented and validated:
 * Dashboards (Grafana)
 * Automated provisioning for edge gateways
 
-This milestone is **PoC / pilot-ready**, not yet hardened for production.
+This milestone is production-ready for edge-only monitoring deployments
+(10–100 sites), with deterministic provisioning, enforced device identity,
+and verified end-to-end telemetry ingestion.
+
+Cloud ingestion, TLS-secured WAN messaging, and store-and-forward buffering
+are intentionally deferred to v0.3.0.
+
 
 ---
 
@@ -126,7 +145,11 @@ Provisioning:
 
 ---
 
-## Getting Started (PoC)
+## Getting Started (Edge Deployment)
+
+For production-style site onboarding, follow:
+docs/runbooks/NEW_SITE_BRINGUP.md
+
 
 ### 1. Provision the Edge Gateway
 

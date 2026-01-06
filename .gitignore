@@ -14,3 +14,10 @@
 .env
 **/*.key
 **/*.pem
+
+# Provisioning
+hardware/raspberry-pi/provision/provision.env
+
+# ESP32
+hardware/esp32/config/secrets.h
+

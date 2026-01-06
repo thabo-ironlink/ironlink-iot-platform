@@ -29,7 +29,7 @@ set -euo pipefail
 # - After adding user to docker group, you must re-login for it to take effect.
 # ==============================================================================
 
-IRONLINK_HOSTNAME="${IRONLINK_HOSTNAME:-iot-pi}"
+IRONLINK_HOSTNAME="${IRONLINK_HOSTNAME:-}"
 IRONLINK_START_STACK="${IRONLINK_START_STACK:-1}"
 IRONLINK_STACK_DIR="${IRONLINK_STACK_DIR:-infra/poc-stack}"
 IRONLINK_INSTALL_DOCKER="${IRONLINK_INSTALL_DOCKER:-1}"
@@ -44,6 +44,47 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 log() { echo -e "\n[IRONLINK] $*\n"; }
 warn() { echo -e "\n[IRONLINK][WARN] $*\n" >&2; }
 die() { echo -e "\n[IRONLINK][ERROR] $*\n" >&2; exit 1; }
+
+# ------------------------------------------------------------------------------
+# v0.2.0+ Fleet Identity (required for 10–100 site operability)
+# ------------------------------------------------------------------------------
+
+IRONLINK_CLIENT_ID="${IRONLINK_CLIENT_ID:-}"
+IRONLINK_SITE_ID="${IRONLINK_SITE_ID:-}"
+IRONLINK_GATEWAY_ID="${IRONLINK_GATEWAY_ID:-}"
+IRONLINK_ENVIRONMENT="${IRONLINK_ENVIRONMENT:-prod}"
+
+require_var() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -z "${value}" ]]; then
+    die "Missing required variable: ${name}. Set it in provision.env (v0.2.0+)."
+  fi
+}
+
+derive_hostname_if_missing() {
+  # Keep PoC backwards compatibility:
+  # - If IRONLINK_HOSTNAME is set, respect it.
+  # - If not, and v0.2 identity is present, derive stable hostname.
+  if [[ -z "${IRONLINK_HOSTNAME:-}" ]]; then
+    if [[ -n "${IRONLINK_SITE_ID}" && -n "${IRONLINK_GATEWAY_ID}" ]]; then
+      IRONLINK_HOSTNAME="${IRONLINK_SITE_ID}-${IRONLINK_GATEWAY_ID}"
+    else
+      IRONLINK_HOSTNAME="iot-pi"
+    fi
+  fi
+}
+
+enforce_identity_if_prod() {
+  # In production mode, enforce identity tuple strictly.
+  # Change the condition here if you want enforcement in all envs.
+  if [[ "${IRONLINK_ENVIRONMENT}" == "prod" ]]; then
+    require_var IRONLINK_CLIENT_ID
+    require_var IRONLINK_SITE_ID
+    require_var IRONLINK_GATEWAY_ID
+  fi
+}
+
 
 require_sudo() {
   if ! command -v sudo >/dev/null 2>&1; then
@@ -228,6 +269,17 @@ main() {
   else
     warn "Could not confidently detect Raspberry Pi. Continuing anyway."
   fi
+
+  derive_hostname_if_missing
+  enforce_identity_if_prod
+
+  log "Identity:"
+  echo "  ENV       : ${IRONLINK_ENVIRONMENT}"
+  echo "  CLIENT_ID : ${IRONLINK_CLIENT_ID:-<unset>}"
+  echo "  SITE_ID   : ${IRONLINK_SITE_ID:-<unset>}"
+  echo "  GATEWAY_ID: ${IRONLINK_GATEWAY_ID:-<unset>}"
+  echo "  HOSTNAME  : ${IRONLINK_HOSTNAME}"
+
 
   set_timezone
   set_hostname

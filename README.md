@@ -197,6 +197,7 @@ Telemetry should appear in Grafana within seconds.
 | Future architecture | `docs/05-architecture_future.md` |
 | Operations          | `docs/06-operational-runbook.md` |
 | Design decisions    | `docs/07-decisions.md`           |
+| Production-ready    | `docs/08-v0.2.0-readiness.md`    |
 
 ---
 
@@ -245,8 +246,8 @@ This repository uses **semantic versioning with scope tags**.
 
 Example:
 
-* `v0.1.0-edge-poc` – current milestone
-* `v0.2.0-edge-prod`
+* `v0.1.0-edge-poc` 
+* `v0.2.0-edge-prod` – current milestone
 * `v0.3.0-cloud-ingest`
 * `v1.0.0-ga`
 

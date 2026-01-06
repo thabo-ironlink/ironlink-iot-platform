@@ -162,7 +162,7 @@ install_docker() {
   else
     log "Installing Docker (from Debian/RPi OS repos)..."
     # Using distro packages for Raspberry Pi OS stability
-    sudo apt-get install -y docker.io docker-compose-plugin
+    sudo apt-get install -y docker.io docker-compose
     sudo systemctl enable docker
     sudo systemctl start docker
   fi
@@ -219,6 +219,13 @@ validate_repo_paths() {
   log "Stack dir : ${stack_abs}"
 }
 
+disable_conflicting_services() {
+  log "Disabling conflicting host services (mosquitto, influxdb, grafana-server) to avoid port conflicts..."
+  sudo systemctl stop mosquitto influxdb grafana-server 2>/dev/null || true
+  sudo systemctl disable mosquitto influxdb grafana-server 2>/dev/null || true
+}
+
+
 start_stack() {
   if [[ "${IRONLINK_START_STACK}" != "1" ]]; then
     warn "Skipping stack startup (IRONLINK_START_STACK=${IRONLINK_START_STACK})."
@@ -231,10 +238,10 @@ start_stack() {
   log "Starting PoC stack from: ${stack_abs}"
 
   # Pull images first (helps on slow networks)
-  (cd "${stack_abs}" && sudo docker compose pull)
+  (cd "${stack_abs}" && sudo docker-compose pull)
 
   # Bring stack up
-  (cd "${stack_abs}" && sudo docker compose up -d)
+  (cd "${stack_abs}" && sudo docker-compose up -d)
 
   log "Stack started. Current containers:"
   sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" || true
@@ -288,6 +295,7 @@ main() {
   install_base_packages
   install_docker
   enable_ufw
+  disable_conflicting_services
   start_stack
   post_checks
 

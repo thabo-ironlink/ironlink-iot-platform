@@ -45,6 +45,38 @@ log() { echo -e "\n[IRONLINK] $*\n"; }
 warn() { echo -e "\n[IRONLINK][WARN] $*\n" >&2; }
 die() { echo -e "\n[IRONLINK][ERROR] $*\n" >&2; exit 1; }
 
+# Docker helpers: use docker without sudo if permitted, otherwise fallback to sudo
+dkr() {
+  if docker ps >/dev/null 2>&1; then
+    docker "$@"
+  else
+    sudo docker "$@"
+  fi
+}
+
+dc() {
+  # Prefer plugin "docker compose", fallback to legacy "docker-compose"
+  if docker compose version >/dev/null 2>&1; then
+    dkr compose "$@"
+  else
+    dkr-compose "$@"
+  fi
+}
+
+dkr-compose() {
+  # docker-compose as a standalone binary (older distros)
+  if docker-compose version >/dev/null 2>&1; then
+    if docker ps >/dev/null 2>&1; then
+      docker-compose "$@"
+    else
+      sudo docker-compose "$@"
+    fi
+  else
+    die "docker-compose not found (install docker compose plugin or docker-compose)"
+  fi
+}
+
+
 # ------------------------------------------------------------------------------
 # v0.2.0+ Fleet Identity (required for 10–100 site operability)
 # ------------------------------------------------------------------------------
@@ -53,6 +85,30 @@ IRONLINK_CLIENT_ID="${IRONLINK_CLIENT_ID:-}"
 IRONLINK_SITE_ID="${IRONLINK_SITE_ID:-}"
 IRONLINK_GATEWAY_ID="${IRONLINK_GATEWAY_ID:-}"
 IRONLINK_ENVIRONMENT="${IRONLINK_ENVIRONMENT:-prod}"
+
+# ------------------------------------------------------------------------------
+# Stack runtime secrets (.env in infra/poc-stack)
+# ------------------------------------------------------------------------------
+INFLUXDB_DB="${INFLUXDB_DB:-ironlink_telemetry}"
+INFLUXDB_PLATFORM_DB="${INFLUXDB_PLATFORM_DB:-ironlink_platform}"
+INFLUXDB_RETENTION_DURATION="${INFLUXDB_RETENTION_DURATION:-90d}"
+INFLUXDB_PLATFORM_RETENTION_DURATION="${INFLUXDB_PLATFORM_RETENTION_DURATION:-30d}"
+
+INFLUXDB_ADMIN_USER="${INFLUXDB_ADMIN_USER:-ironadmin}"
+INFLUXDB_ADMIN_PASSWORD="${INFLUXDB_ADMIN_PASSWORD:-}"
+
+INFLUXDB_TELEGRAF_USER="${INFLUXDB_TELEGRAF_USER:-telegraf_writer}"
+INFLUXDB_TELEGRAF_PASSWORD="${INFLUXDB_TELEGRAF_PASSWORD:-}"
+
+GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-}"
+
+MQTT_USERNAME="${MQTT_USERNAME:-mqtt_client}"
+MQTT_PASSWORD="${MQTT_PASSWORD:-}"
+
+# Compose project name (stable network/volume naming)
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ironlink}"
+
 
 require_var() {
   local name="$1"
@@ -194,14 +250,12 @@ enable_ufw() {
   # Allow SSH (important for headless)
   sudo ufw allow 22/tcp
 
-  # Allow Grafana (local access)
-  sudo ufw allow 3000/tcp
+  # Defense-in-depth: block these even though we bind to 127.0.0.1 in docker-compose
+  sudo ufw deny 3000/tcp
+  sudo ufw deny 8086/tcp
 
-  # Allow InfluxDB (local access / debugging)
-  sudo ufw allow 8086/tcp
-
-  # Allow MQTT (local LAN devices publish to broker)
-  sudo ufw allow 1883/tcp
+  # Allow MQTT from LAN ranges (adjust if your LAN differs)
+  sudo ufw allow from 192.168.0.0/16 to any port 1883 proto tcp
 
   sudo ufw --force enable
   sudo ufw status verbose || true
@@ -226,6 +280,196 @@ disable_conflicting_services() {
 }
 
 
+rand_b64() {
+  # 32 bytes base64 (~43 chars). Good enough for PoC secrets.
+  openssl rand -base64 32
+}
+
+stack_dir_abs() {
+  echo "${REPO_ROOT}/${IRONLINK_STACK_DIR}"
+}
+
+ensure_stack_env_file() {
+  local stack_abs
+  stack_abs="$(stack_dir_abs)"
+  local env_file="${stack_abs}/.env"
+
+  if [[ -f "${env_file}" ]]; then
+    log "Stack .env already exists: ${env_file}"
+    return 0
+  fi
+
+  log "Creating stack runtime .env: ${env_file}"
+
+  # generate passwords if not provided
+  INFLUXDB_ADMIN_PASSWORD="${INFLUXDB_ADMIN_PASSWORD}"
+  INFLUXDB_TELEGRAF_PASSWORD="${INFLUXDB_TELEGRAF_PASSWORD}"
+  GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD}"
+  MQTT_PASSWORD="${MQTT_PASSWORD}"
+
+
+  cat > "${env_file}" <<EOF
+# ==============================================================================
+# Ironlink PoC Stack Runtime Secrets (DO NOT COMMIT)
+# Location: infra/poc-stack/.env
+# ==============================================================================
+
+# Fleet identity (used by Telegraf tags)
+IRONLINK_CLIENT_ID=${IRONLINK_CLIENT_ID}
+IRONLINK_SITE_ID=${IRONLINK_SITE_ID}
+IRONLINK_GATEWAY_ID=${IRONLINK_GATEWAY_ID}
+IRONLINK_ENVIRONMENT=${IRONLINK_ENVIRONMENT}
+IRONLINK_HOSTNAME=${IRONLINK_HOSTNAME}
+
+# InfluxDB
+INFLUXDB_DB=${INFLUXDB_DB}
+INFLUXDB_PLATFORM_DB=${INFLUXDB_PLATFORM_DB}
+INFLUXDB_RETENTION_DURATION=${INFLUXDB_RETENTION_DURATION}
+INFLUXDB_PLATFORM_RETENTION_DURATION=${INFLUXDB_PLATFORM_RETENTION_DURATION}
+
+INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
+INFLUXDB_ADMIN_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
+INFLUXDB_TELEGRAF_USER=${INFLUXDB_TELEGRAF_USER}
+INFLUXDB_TELEGRAF_PASSWORD=${INFLUXDB_TELEGRAF_PASSWORD}
+
+# Grafana
+GRAFANA_ADMIN_USER=${GRAFANA_ADMIN_USER}
+GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+
+# MQTT auth
+MQTT_USERNAME=${MQTT_USERNAME}
+MQTT_PASSWORD=${MQTT_PASSWORD}
+
+# InfluxDB auth toggle (provisioning uses this)
+INFLUXDB_HTTP_AUTH_ENABLED=true
+EOF
+
+  chmod 600 "${env_file}"
+  log "Created .env with chmod 600."
+}
+
+render_telegraf_config() {
+  local stack_abs
+  stack_abs="$(stack_dir_abs)"
+
+  local tpl="${stack_abs}/telegraf/telegraf.conf.template"
+  local out="${stack_abs}/telegraf/telegraf.conf"
+
+  if [[ ! -f "${tpl}" ]]; then
+    warn "Telegraf template not found: ${tpl} (skipping render)"
+    return 0
+  fi
+
+  log "Rendering Telegraf config: ${out}"
+  cd "${stack_abs}"
+
+  # export vars from .env for envsubst
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+
+  envsubst < "${tpl}" > "${out}"
+  chmod 644 "${out}"
+
+  # sanity: fail if unresolved placeholders remain
+  if grep -q '\${' "${out}"; then
+    die "Telegraf config render left unresolved placeholders. Check .env and template."
+  fi
+}
+
+generate_mqtt_passwordfile() {
+  local stack_abs
+  stack_abs="$(stack_dir_abs)"
+  local pwfile="${stack_abs}/mosquitto/passwordfile"
+
+  if [[ ! -d "${stack_abs}/mosquitto" ]]; then
+    die "Mosquitto directory not found: ${stack_abs}/mosquitto"
+  fi
+
+  log "Generating/updating MQTT passwordfile (non-interactive): ${pwfile}"
+
+  cd "${stack_abs}"
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+
+  if [[ -f "${pwfile}" ]]; then
+    # update existing
+    echo "${MQTT_PASSWORD}" | dkr run --rm -i \
+      -v "${stack_abs}/mosquitto:/mosquitto/config" \
+      eclipse-mosquitto:2.0.18 \
+      mosquitto_passwd -b /mosquitto/config/passwordfile "${MQTT_USERNAME}" -
+  else
+    # create new
+    echo "${MQTT_PASSWORD}" | dkr run --rm -i \
+      -v "${stack_abs}/mosquitto:/mosquitto/config" \
+      eclipse-mosquitto:2.0.18 \
+      mosquitto_passwd -c -b /mosquitto/config/passwordfile "${MQTT_USERNAME}" -
+  fi
+
+  chmod 600 "${pwfile}"
+}
+
+initialize_influxdb_once() {
+  local stack_abs
+  stack_abs="$(stack_dir_abs)"
+  local sentinel="${stack_abs}/.influx_initialized"
+
+  if [[ -f "${sentinel}" ]]; then
+    log "InfluxDB already initialized (sentinel exists)."
+    return 0
+  fi
+
+  # if data dir already populated, assume initialized
+  if [[ -d "${stack_abs}/influxdb-data" ]] && [[ -n "$(ls -A "${stack_abs}/influxdb-data" 2>/dev/null || true)" ]]; then
+    log "InfluxDB data dir is not empty. Assuming initialized; creating sentinel."
+    touch "${sentinel}"
+    return 0
+  fi
+
+  log "Initializing InfluxDB (first boot): auth OFF during init, then ON for steady state."
+
+  cd "${stack_abs}"
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ironlink}"
+
+  # start influxdb with auth disabled
+  INFLUXDB_HTTP_AUTH_ENABLED=false dc up -d influxdb
+
+  # wait for readiness using influx CLI inside container
+  local max_wait=90
+  local waited=0
+  until dc exec -T influxdb influx -execute "SHOW DATABASES" >/dev/null 2>&1; do
+    sleep 2
+    waited=$((waited + 2))
+    if [[ "${waited}" -ge "${max_wait}" ]]; then
+      die "InfluxDB did not become ready within ${max_wait}s"
+    fi
+  done
+
+  # run init container (joins correct network automatically)
+  log "Running influxdb-init one-shot container..."
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+
+  COMPOSE_PROFILES=init dc run --rm influxdb-init
+
+  # stop influxdb so it restarts later with auth enabled
+  dc stop influxdb
+
+  # bring influxdb back up with auth enabled (steady state)
+  log "Starting InfluxDB with auth enabled (steady state)..."
+  INFLUXDB_HTTP_AUTH_ENABLED=true dc up -d influxdb
+
+  touch "${sentinel}"
+  log "InfluxDB initialization complete. Sentinel created: ${sentinel}"
+
+}
+
+
 start_stack() {
   if [[ "${IRONLINK_START_STACK}" != "1" ]]; then
     warn "Skipping stack startup (IRONLINK_START_STACK=${IRONLINK_START_STACK})."
@@ -237,20 +481,22 @@ start_stack() {
   local stack_abs="${REPO_ROOT}/${IRONLINK_STACK_DIR}"
   log "Starting PoC stack from: ${stack_abs}"
 
-  # Pull images first (helps on slow networks)
-  (cd "${stack_abs}" && sudo docker-compose pull)
+  export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ironlink}"
 
-  # Bring stack up
-  (cd "${stack_abs}" && sudo docker-compose up -d)
+  cd "${stack_abs}"
+
+  dc pull
+  dc up -d
 
   log "Stack started. Current containers:"
-  sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" || true
+  docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" || true
 
-  log "Local endpoints (adjust if you changed ports in docker-compose.yml):"
-  echo "  - Grafana : http://$(hostname -I | awk '{print $1}'):3000"
-  echo "  - InfluxDB: http://$(hostname -I | awk '{print $1}'):8086"
+  log "Local endpoints:"
+  echo "  - Grafana : http://127.0.0.1:3000 (bound localhost; use SSH tunnel)"
+  echo "  - InfluxDB: http://127.0.0.1:8086 (bound localhost; use SSH tunnel)"
   echo "  - MQTT    : tcp://$(hostname -I | awk '{print $1}'):1883"
 }
+
 
 post_checks() {
   log "Post-checks (best effort)..."
@@ -296,6 +542,10 @@ main() {
   install_docker
   enable_ufw
   disable_conflicting_services
+  ensure_stack_env_file
+  render_telegraf_config
+  generate_mqtt_passwordfile
+  initialize_influxdb_once
   start_stack
   post_checks
 

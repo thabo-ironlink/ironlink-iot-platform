@@ -1,0 +1,76 @@
+[agent]
+  interval = "10s"
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  flush_interval = "10s"
+  omit_hostname = true
+
+# ----------------------------
+# Fleet Identity Tags
+# ----------------------------
+[global_tags]
+  client_id   = "${IRONLINK_CLIENT_ID}"
+  site_id     = "${IRONLINK_SITE_ID}"
+  gateway_id  = "${IRONLINK_GATEWAY_ID}"
+  environment = "${IRONLINK_ENVIRONMENT}"
+  hostname    = "${IRONLINK_HOSTNAME}"
+
+# ----------------------------
+# MQTT Telemetry Ingest
+# ----------------------------
+[[inputs.mqtt_consumer]]
+  servers = ["tcp://mosquitto:1883"]
+  topics = [
+    "ironlink/+/+/+/telemetry",
+    "ironlink/+/+/+/status",
+    "ironlink/+/+/+/event"
+  ]
+  qos = 0
+  connection_timeout = "30s"
+  persistent_session = false
+
+  # MQTT auth (required once allow_anonymous=false)
+  username = "${MQTT_USERNAME}"
+  password = "${MQTT_PASSWORD}"
+
+  data_format = "json"
+  topic_tag = "topic"
+
+# ----------------------------
+# Platform Monitoring (Basic - low overhead)
+# ----------------------------
+[[inputs.cpu]]
+  percpu = false
+  totalcpu = true
+
+[[inputs.mem]]
+
+[[inputs.disk]]
+  mount_points = ["/"]
+  ignore_fs = ["tmpfs", "devtmpfs"]
+
+# InfluxDB internal metrics (very useful, low overhead)
+[[inputs.influxdb]]
+  urls = ["http://influxdb:8086/debug/vars"]
+  timeout = "5s"
+
+# ----------------------------
+# Output to InfluxDB (Two-DB split)
+# ----------------------------
+
+# Telemetry only (MQTT)
+[[outputs.influxdb]]
+  urls = ["http://influxdb:8086"]
+  database = "${INFLUXDB_DB}"
+  username = "${INFLUXDB_TELEGRAF_USER}"
+  password = "${INFLUXDB_TELEGRAF_PASSWORD}"
+  namepass = ["mqtt_consumer"]
+
+# Platform metrics only (everything except mqtt_consumer)
+[[outputs.influxdb]]
+  urls = ["http://influxdb:8086"]
+  database = "${INFLUXDB_PLATFORM_DB}"
+  username = "${INFLUXDB_TELEGRAF_USER}"
+  password = "${INFLUXDB_TELEGRAF_PASSWORD}"
+  namedrop = ["mqtt_consumer"]
